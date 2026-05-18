@@ -1,0 +1,78 @@
+---
+# VLAN Provisioning Playbook
+# Phase 4: Config Provisioning
+# Usage: ansible-playbook playbooks/03_provisioning/vlan.yml -e "vlan_id=100 vlan_name=PRODUCTION"
+
+- name: Provision VLAN on Network Devices
+  hosts: all
+  gather_facts: false
+  connection: network_cli
+
+  vars:
+    vlan_id: "{{ vlan_id | default(omit) }}"
+    vlan_name: "{{ vlan_name | default(omit) }}"
+    vlan_description: "{{ vlan_description | default('Managed by Ansible') }}"
+    shutdown_vlan: false
+
+  tasks:
+    - name: Validate VLAN ID
+      ansible.builtin.fail:
+        msg: "vlan_id is required (1-4094)"
+      when: vlan_id | int < 1 or vlan_id | int > 4094
+
+    # === CISCO IOS-XR VLAN PROVISIONING ===
+    - name: Configure VLAN on Cisco IOS-XR
+      cisco.ios.ios_config:
+        lines:
+          - vlan {{ vlan_id }}
+          - name {{ vlan_name | default('VLAN' + vlan_id) }}
+      when: ansible_network_os | regex_search('iosxr')
+      register: cisco_vlan_result
+
+    - name: Configure VLAN interface on Cisco
+      cisco.ios.ios_config:
+        lines:
+          - description {{ vlan_description }}
+          - vlan trunk dot1q inheritance native
+      parents: interface Bundle-Ether1.{{ vlan_id }}
+      when: ansible_network_os | regex_search('iosxr')
+
+    # === HUAWEI VRP VLAN PROVISIONING ===
+    - name: Configure VLAN on Huawei VRP
+      community.network.ce_config:
+        lines:
+          - vlan {{ vlan_id }}
+        provider: "{{ ansible_ssh_pass | default('') }}"
+      when: ansible_network_os | regex_search('vrp|ce68')
+      register: huawei_vlan_result
+
+    - name: Configure VLAN description on Huawei
+      community.network.ce_config:
+        lines:
+          - description {{ vlan_description }}
+        parents: >
+          {% if vlan_id | int < 1000 %}
+          vlan {{ vlan_id }}
+          {% else %}
+          vlan batch {{ vlan_id }}
+          {% endif %}
+      when: ansible_network_os | regex_search('vrp|ce68')
+
+    # === VERIFICATION ===
+    - name: Verify VLAN exists (Cisco)
+      cisco.ios.ios_command:
+        commands: show vlan {{ vlan_id }}
+      register: verify_vlan
+      when: ansible_network_os | regex_search('iosxr')
+      ignore_errors: yes
+
+    - name: Verify VLAN exists (Huawei)
+      community.network.ce_command:
+        commands: display vlan {{ vlan_id }}
+      register: verify_huawei_vlan
+      when: ansible_network_os | regex_search('vrp|ce68')
+      ignore_errors: yes
+
+    - name: Display VLAN provisioning result
+      ansible.builtin.debug:
+        msg: "VLAN {{ vlan_id }} ({{ vlan_name | default('unnamed') }}) provisioned on {{ inventory_hostname }}"

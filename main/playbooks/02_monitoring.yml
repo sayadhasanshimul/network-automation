@@ -1,0 +1,194 @@
+---
+# Network Monitoring & Health Check Playbook
+# Phase 3: Monitoring System
+# Usage: ansible-playbook playbooks/02_monitoring.yml
+
+- name: Network Device Health Monitoring
+  hosts: all
+  gather_facts: true
+  connection: network_cli
+
+  vars:
+    ping_threshold_ms: 100
+    packet_loss_threshold_percent: 1
+    critical_interfaces: []
+    telegram_enabled: "{{ telegram_enabled | default(true) }}"
+    telegram_bot_token: "{{ lookup('env', 'TELEGRAM_BOT_TOKEN') }}"
+    telegram_chat_id: "{{ lookup('env', 'TELEGRAM_CHAT_ID') }}"
+
+  tasks:
+    # === INTERFACE MONITORING ===
+    - name: Get interface status (Cisco)
+      cisco.ios.ios_command:
+        commands:
+          - show ip interface brief
+          - show interfaces status
+      register: ios_interfaces
+      when: ansible_network_os | regex_search('iosxr|ios')
+      ignore_errors: yes
+
+    - name: Get interface status (Huawei)
+      community.network.ce_command:
+        commands:
+          - display ip interface brief
+          - display interface brief
+      register: huawei_interfaces
+      when: ansible_network_os | regex_search('vrp|ce68')
+      ignore_errors: yes
+
+    - name: Parse interface status
+      ansible.builtin.set_fact:
+        interfaces: "{{ ios_interfaces.stdout_lines[0] | join('\n') }}"
+      when: ios_interfaces is defined and ios_interfaces.stdout_lines is defined
+
+    - name: Check for down interfaces
+      ansible.builtin.set_fact:
+        down_interfaces: []
+      when: interfaces is not defined
+
+    # === BGP MONITORING ===
+    - name: Get BGP summary (Cisco)
+      cisco.ios.ios_command:
+        commands: show bgp summary
+      register: bgp_summary
+      when: ansible_network_os | regex_search('iosxr')
+      ignore_errors: yes
+
+    - name: Get BGP peer status (Huawei)
+      community.network.ce_command:
+        commands: display bgp peer
+      register: huawei_bgp
+      when: ansible_network_os | regex_search('vrp|ce68')
+      ignore_errors: yes
+
+    - name: Check for BGP peer issues
+      ansible.builtin.set_fact:
+        bgp_peers_down: []
+        bgp_alert: false
+      when: bgp_summary is not defined
+
+    # === DEVICE REACHABILITY ===
+    - name: Ping device from localhost
+      ansible.builtin.ping:
+      register: local_ping
+      ignore_errors: yes
+
+    - name: Calculate device reachability
+      ansible.builtin.set_fact:
+        device_reachable: "{{ local_ping.ping is defined }}"
+
+    # === CPU/MEMORY CHECKS ===
+    - name: Get system resources (Cisco)
+      cisco.ios.ios_command:
+        commands: show processes cpu | include CPU
+      register: cpu_usage
+      when: ansible_network_os | regex_search('iosxr|ios')
+      ignore_errors: yes
+
+    - name: Get memory usage (Cisco)
+      cisco.ios.ios_command:
+        commands: show memory summary
+      register: memory_usage
+      when: ansible_network_os | regex_search('iosxr|ios')
+      ignore_errors: yes
+
+    # === NTP CHECKS ===
+    - name: Check NTP status (Cisco)
+      cisco.ios.ios_command:
+        commands: show ntp status
+      register: ntp_status
+      when: ansible_network_os | regex_search('iosxr|ios')
+      ignore_errors: yes
+
+    - name: Check NTP status (Huawei)
+      community.network.ce_command:
+        commands: display ntp status
+      register: huawei_ntp
+      when: ansible_network_os | regex_search('vrp|ce68')
+      ignore_errors: yes
+
+    - name: Verify NTP synchronized
+      ansible.builtin.set_fact:
+        ntp_sync: "{{ ntp_status.stdout_lines[0] is search('synchronized') if ntp_status.stdout_lines is defined else false }}"
+
+    # === SYSLOG CHECKS ===
+    - name: Check recent syslog
+      ansible.builtin.shell: |
+        ps aux | grep syslog | grep -v grep || echo "syslog not running"
+      register: syslog_check
+      changed_when: false
+
+    # === GENERATE MONITORING REPORT ===
+    - name: Generate monitoring report
+      ansible.builtin.set_fact:
+        monitoring_report:
+          hostname: "{{ inventory_hostname }}"
+          timestamp: "{{ lookup('pipe', 'date +%Y-%m-%d %H:%M:%S') }}"
+          reachable: "{{ device_reachable | default(false) }}"
+          interfaces: "{{ interfaces | default('N/A') }}"
+          bgp_peers_down: "{{ bgp_peers_down | default([]) }}"
+          bgp_alert: "{{ bgp_alert | default(false) }}"
+          ntp_synced: "{{ ntp_sync | default(false) }}"
+
+    - name: Display monitoring report
+      ansible.builtin.debug:
+        msg:
+          - "=== Monitoring Report: {{ inventory_hostname }} ==="
+          - "Reachable: {{ device_reachable | default(false) }}"
+          - "BGP Alert: {{ bgp_alert | default(false) }}"
+          - "NTP Synced: {{ ntp_sync | default(false) }}"
+
+    # === ALERTS ===
+    - name: Alert - Device unreachable
+      ansible.builtin.debug:
+        msg: "CRITICAL: {{ inventory_hostname }} is UNREACHABLE!"
+      when: not (device_reachable | default(false))
+
+    - name: Alert - BGP peers down
+      ansible.builtin.debug:
+        msg: "WARNING: BGP peers down on {{ inventory_hostname }}: {{ bgp_peers_down }}"
+      when: bgp_alert | default(false)
+
+    - name: Alert - NTP not synchronized
+      ansible.builtin.debug:
+        msg: "WARNING: NTP not synchronized on {{ inventory_hostname }}"
+      when: not (ntp_sync | default(true))
+
+    # === TELEGRAM ALERTS ===
+    - name: Send CRITICAL alert to Telegram
+      ansible.builtin.shell: |
+        python3 /opt/network-automation/scripts/telegram_notify.py \
+          -t "CRITICAL" \
+          -m "{{ inventory_hostname }} is UNREACHABLE!" \
+          -d "{{ inventory_hostname }}"
+      when: not (device_reachable | default(false))
+      ignore_errors: yes
+
+    - name: Send WARNING alert to Telegram (BGP)
+      ansible.builtin.shell: |
+        python3 /opt/network-automation/scripts/telegram_notify.py \
+          -t "WARNING" \
+          -m "BGP peers down on {{ inventory_hostname }}: {{ bgp_peers_down }}" \
+          -d "{{ inventory_hostname }}"
+      when: bgp_alert | default(false)
+      ignore_errors: yes
+
+    - name: Send WARNING alert to Telegram (NTP)
+      ansible.builtin.shell: |
+        python3 /opt/network-automation/scripts/telegram_notify.py \
+          -t "WARNING" \
+          -m "NTP not synchronized on {{ inventory_hostname }}" \
+          -d "{{ inventory_hostname }}"
+      when: not (ntp_sync | default(true))
+      ignore_errors: yes
+
+# Summary host for consolidated reporting
+- name: Generate Monitoring Summary
+  hosts: localhost
+  gather_facts: no
+  run_once: true
+
+  tasks:
+    - name: Summary of monitoring run
+      ansible.builtin.debug:
+        msg: "Monitoring run completed at {{ lookup('pipe', 'date +%Y-%m-%d %H:%M:%S') }}"

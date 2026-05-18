@@ -1,0 +1,83 @@
+---
+# Network Device Group Summary
+# Shows all devices organized by type
+# Usage: ansible-playbook playbooks/06_device_summary.yml
+
+- name: Network Device Summary
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Display Core Routers
+      ansible.builtin.debug:
+        msg: |
+          ============================================
+          CORE ROUTERS (Cisco NCS540 + Huawei CE6855)
+          ============================================
+
+          Cisco NCS540 Core:
+            - ncs540-core-01 (192.168.1.1)
+            - ncs540-core-02 (192.168.1.2)
+
+          Huawei CE6855 CDN:
+            - ce6855-cdn-01 (192.168.1.3)
+            - ce6855-cdn-02 (192.168.1.4)
+
+    - name: Display Core Switches
+      ansible.builtin.debug:
+        msg: |
+          ============================================
+          CORE SWITCHES (2 Cisco + 2 Huawei)
+          ============================================
+
+          Cisco Nexus 9000:
+            - core-sw-cisco-01 (10.1.1.1)
+            - core-sw-cisco-02 (10.1.1.2)
+
+          Huawei S6700:
+            - core-sw-huawei-01 (10.1.1.3)
+            - core-sw-huawei-02 (10.1.1.4)
+
+    - name: Display Distribution Routers
+      ansible.builtin.debug:
+        msg: |
+          ============================================
+          DISTRIBUTION ROUTERS (2 Cisco + 2 Huawei)
+          ============================================
+
+          Cisco ASR 9000:
+            - dist-rtr-cisco-01 (10.1.2.1)
+            - dist-rtr-cisco-02 (10.1.2.2)
+
+          Huawei NE8000:
+            - dist-rtr-huawei-01 (10.1.2.3)
+            - dist-rtr-huawei-02 (10.1.2.4)
+
+    - name: Display Distribution Switches
+      ansible.builtin.debug:
+        msg: |
+          ============================================
+          DISTRIBUTION SWITCHES (3 Cisco + 3 Huawei)
+          ============================================
+
+          Cisco Catalyst 3750:
+            - dist-sw-cisco-01 (10.1.3.1)
+            - dist-sw-cisco-02 (10.1.3.2)
+            - dist-sw-cisco-03 (10.1.3.3)
+
+          Huawei S5700:
+            - dist-sw-huawei-01 (10.1.3.11)
+            - dist-sw-huawei-02 (10.1.3.12)
+            - dist-sw-huawei-03 (10.1.3.13)
+
+    - name: Display Total Count
+      ansible.builtin.debug:
+        msg: |
+          ============================================
+          TOTAL: 16 DEVICES
+          ============================================
+          - 2 Core Routers (NCS540)
+          - 2 CDN Routers (CE6855)
+          - 4 Core Switches (2 Cisco + 2 Huawei)
+          - 4 Distribution Routers (2 Cisco + 2 Huawei)
+          - 6 Distribution Switches (3 Cisco + 3 Huawei)
