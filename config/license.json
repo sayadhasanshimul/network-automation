@@ -1,0 +1,14 @@
+# License Configuration
+# Account-based licensing - no license keys
+{
+    "account": "",
+    "company": "",
+    "tier": "trial",
+    "status": "inactive",
+    "subscription_status": "inactive",
+    "max_devices": 0,
+    "features": [],
+    "support": "community",
+    "issued_date": "",
+    "expiry_date": ""
+}

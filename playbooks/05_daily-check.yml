@@ -1,0 +1,96 @@
+---
+# Daily Network Health Check
+# Comprehensive health check for all devices
+# Usage: ansible-playbook playbooks/05_daily-check.yml
+
+- name: Daily Network Health Check
+  hosts: all
+  gather_facts: false
+  connection: network_cli
+
+  vars:
+    health_check_time: "{{ lookup('pipe', 'date +%Y-%m-%d %H:%M:%S') }}"
+
+  tasks:
+    # === DEVICE REACHABILITY ===
+    - name: Ping gateway from device
+      ansible.builtin.ping:
+      register: device_ping
+
+    - name: Check device可达性
+      ansible.builtin.set_fact:
+        device_status: "{{ 'UP' if device_ping.ping is defined else 'DOWN' }}"
+
+    # === INTERFACE STATUS ===
+    - name: Get all interface status (Cisco)
+      cisco.ios.ios_command:
+        commands:
+          - show ip interface brief
+          - show interfaces status
+      register: cisco_if_status
+      when: ansible_network_os | regex_search('iosxr|ios')
+      ignore_errors: yes
+
+    - name: Get all interface status (Huawei)
+      community.network.ce_command:
+        commands:
+          - display ip interface brief
+          - display interface brief
+      register: huawei_if_status
+      when: ansible_network_os | regex_search('vrp|ce68')
+      ignore_errors: yes
+
+    # === BGP STATUS ===
+    - name: Get BGP summary (Cisco)
+      cisco.ios.ios_command:
+        commands: show bgp summary
+      register: cisco_bgp
+      when: ansible_network_os | regex_search('iosxr|ios')
+      ignore_errors: yes
+
+    - name: Get BGP summary (Huawei)
+      community.network.ce_command:
+        commands: display bgp peer
+      register: huawei_bgp
+      when: ansible_network_os | regex_search('vrp|ce68')
+      ignore_errors: yes
+
+    # === ROUTING TABLE ===
+    - name: Get IP routing summary (Cisco)
+      cisco.ios.ios_command:
+        commands: show ip route summary
+      register: cisco_routes
+      when: ansible_network_os | regex_search('iosxr|ios')
+      ignore_errors: yes
+
+    # === LOGGING & ALERTS ===
+    - name: Check for error logs
+      cisco.ios.ios_command:
+        commands: show logging | include ERROR|CRITICAL|FAIL
+      register: error_logs
+      when: ansible_network_os | regex_search('iosxr|ios')
+      ignore_errors: yes
+
+    - name: Generate health report
+      ansible.builtin.set_fact:
+        health_report:
+          host: "{{ inventory_hostname }}"
+          time: "{{ health_check_time }}"
+          status: "{{ device_status }}"
+          interfaces_ok: "{{ (cisco_if_status.stdout_lines | length > 0) if cisco_if_status is defined else (huawei_if_status.stdout_lines | length > 0) }}"
+          bgp_peers_ok: "{{ not (cisco_bgp.stdout_lines[0] is search('Idle|Active') if cisco_bgp.stdout_lines is defined else false) }}"
+
+    - name: Display health check result
+      ansible.builtin.debug:
+        msg: "[{{ health_check_time }}] {{ inventory_hostname }} - Status: {{ device_status }}"
+
+# Summary collection
+- name: Aggregate Health Report
+  hosts: localhost
+  gather_facts: false
+  run_once: true
+
+  tasks:
+    - name: Generate aggregate report
+      ansible.builtin.debug:
+        msg: "Daily health check completed at {{ lookup('pipe', 'date +%Y-%m-%d %H:%M:%S') }}"

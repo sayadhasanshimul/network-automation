@@ -1,0 +1,32 @@
+---
+# Ansible Collections and Roles Requirements
+
+collections:
+  # Network automation collections
+  - name: cisco.ios
+    version: ">=6.0.0"
+  - name: community.network
+    version: ">=6.0.0"
+  - name: ansible.netcommon
+    version: ">=6.0.0"
+
+  # Monitoring and alerting
+  - name: community.general
+    version: ">=8.0.0"
+
+roles:
+  # NAPALM for multi-vendor support
+  - name: napalm_base
+    src: https://github.com/napalm-automation/napalm-ansible
+    version: master
+
+# Python dependencies (install via pip)
+# pip install -r requirements.txt
+dependencies:
+  python_packages:
+    - netmiko
+    - napalm
+    - ncclient
+    - pyyaml
+    - jinja2
+    - ansible-pylibssh

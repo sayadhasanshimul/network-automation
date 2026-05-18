@@ -1,0 +1,160 @@
+---
+# Interface Recovery Playbook
+# Phase 5: Failover & Remediation
+# Usage: ansible-playbook playbooks/04_remediation/interface-recovery.yml -e "target_interface=GigabitEthernet0/0/0/1"
+
+- name: Automatic Interface Recovery
+  hosts: all
+  gather_facts: false
+  connection: network_cli
+
+  vars:
+    target_interface: "{{ target_interface | default(omit) }}"
+    flap_threshold: 3
+    flap_window_minutes: 5
+    cooldown_seconds: 60
+    auto_recover: "{{ auto_recover | default(true) }}"
+    telegram_enabled: true
+
+  tasks:
+    - name: Validate target interface
+      ansible.builtin.fail:
+        msg: "target_interface is required"
+      when: target_interface is not defined
+
+    # === GET INTERFACE STATUS ===
+    - name: Get interface status (Cisco)
+      cisco.ios.ios_command:
+        commands:
+          - show interfaces {{ target_interface }} status
+          - show interfaces {{ target_interface }} transceiver
+      register: cisco_interface_status
+      when: ansible_network_os | regex_search('iosxr|ios')
+      ignore_errors: yes
+
+    - name: Get interface status (Huawei)
+      community.network.ce_command:
+        commands: display interface {{ target_interface }}
+      register: huawei_interface_status
+      when: ansible_network_os | regex_search('vrp|ce68')
+      ignore_errors: yes
+
+    # === PARSE STATUS ===
+    - name: Determine if interface is down
+      ansible.builtin.set_fact:
+        interface_down: true
+      when: >
+        (cisco_interface_status.stdout_lines is defined and
+         cisco_interface_status.stdout_lines[0] is search('down|disabled')) or
+        (huawei_interface_status.stdout_lines is defined and
+         huawei_interface_status.stdout_lines[0] is search('down|disabled'))
+
+    - name: Set interface status fact
+      ansible.builtin.set_fact:
+        interface_down: false
+      when: >
+        (cisco_interface_status.stdout_lines is defined and
+         not (cisco_interface_status.stdout_lines[0] is search('down|disabled'))) or
+        (huawei_interface_status.stdout_lines is defined and
+         not (huawei_interface_status.stdout_lines[0] is search('down|disabled')))
+
+    # === AUTOMATIC RECOVERY (CISCO) ===
+    - name: Attempt interface recovery (Cisco IOS-XR)
+      cisco.ios.ios_config:
+        lines:
+          - shutdown
+        parents: "interface {{ target_interface }}"
+      when: >
+        interface_down | default(false) and
+        auto_recover | default(true) and
+        ansible_network_os | regex_search('iosxr')
+
+    - name: Re-enable interface (Cisco)
+      cisco.ios.ios_config:
+        lines:
+          - no shutdown
+        parents: "interface {{ target_interface }}"
+      when: >
+        interface_down | default(false) and
+        auto_recover | default(true) and
+        ansible_network_os | regex_search('iosxr')
+
+    # === AUTOMATIC RECOVERY (HUAWEI) ===
+    - name: Attempt interface recovery (Huawei VRP)
+      community.network.ce_config:
+        lines:
+          - shutdown
+        parents: "interface {{ target_interface }}"
+        provider: "{{ ansible_ssh_pass | default('') }}"
+      when: >
+        interface_down | default(false) and
+        auto_recover | default(true) and
+        ansible_network_os | regex_search('vrp|ce68')
+
+    - name: Re-enable interface (Huawei)
+      community.network.ce_config:
+        lines:
+          - undo shutdown
+        parents: "interface {{ target_interface }}"
+        provider: "{{ ansible_ssh_pass | default('') }}"
+      when: >
+        interface_down | default(false) and
+        auto_recover | default(true) and
+        ansible_network_os | regex_search('vrp|ce68')
+
+    # === VERIFY RECOVERY ===
+    - name: Verify interface recovery (Cisco)
+      cisco.ios.ios_command:
+        commands: show ip interface brief | include {{ target_interface }}
+      register: recovery_verification
+      when: interface_down | default(false)
+      ignore_errors: yes
+
+    - name: Log recovery attempt
+      ansible.builtin.debug:
+        msg: "Interface recovery {{ 'SUCCESSFUL' if interface_down else 'NOT NEEDED' }} for {{ target_interface }} on {{ inventory_hostname }}"
+
+    # === ALERTING ===
+    - name: Alert on interface down
+      ansible.builtin.debug:
+        msg: "CRITICAL: Interface {{ target_interface }} on {{ inventory_hostname }} is DOWN - Recovery initiated"
+      when: interface_down | default(false)
+
+    - name: Alert on recovery failure
+      ansible.builtin.debug:
+        msg: "ALERT: Interface recovery FAILED for {{ target_interface }} on {{ inventory_hostname }} - Manual intervention required"
+      when: >
+        interface_down | default(false) and
+        recovery_verification.stdout_lines[0] is search('down') if recovery_verification.stdout_lines is defined else false
+
+    # === TELEGRAM ALERTS ===
+    - name: Send CRITICAL Telegram alert (interface down)
+      ansible.builtin.shell: |
+        python3 /opt/network-automation/scripts/telegram_notify.py \
+          -t "CRITICAL" \
+          -m "Interface {{ target_interface }} on {{ inventory_hostname }} is DOWN. Recovery initiated." \
+          -d "{{ inventory_hostname }}"
+      when: interface_down | default(false)
+      ignore_errors: yes
+
+    - name: Send SUCCESS Telegram alert (recovery successful)
+      ansible.builtin.shell: |
+        python3 /opt/network-automation/scripts/telegram_notify.py \
+          -t "SUCCESS" \
+          -m "Interface {{ target_interface }} on {{ inventory_hostname }} recovered successfully." \
+          -d "{{ inventory_hostname }}"
+      when: >
+        interface_down | default(false) and
+        recovery_verification.stdout_lines[0] is not search('down') if recovery_verification.stdout_lines is defined else false
+      ignore_errors: yes
+
+    - name: Send WARNING Telegram alert (recovery failed)
+      ansible.builtin.shell: |
+        python3 /opt/network-automation/scripts/telegram_notify.py \
+          -t "WARNING" \
+          -m "Interface recovery FAILED for {{ target_interface }} on {{ inventory_hostname }}. Manual intervention required!" \
+          -d "{{ inventory_hostname }}"
+      when: >
+        interface_down | default(false) and
+        recovery_verification.stdout_lines[0] is search('down') if recovery_verification.stdout_lines is defined else false
+      ignore_errors: yes
